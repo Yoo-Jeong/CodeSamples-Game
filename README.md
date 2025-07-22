@@ -1,1 +1,1 @@
-# EvilWest-CopyProject-CodeSample
+# CodeSamples-GameClient

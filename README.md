@@ -1,20 +1,22 @@
 # 🎮 CodeSamples-GameClient
 
+<br>
+
 게임 클라이언트 프로그래밍 경험을 기반으로,  
 직접 구현한 기능의 핵심 코드 샘플과 설명을 정리했습니다.
 
 <br>
 
-## 🧠 주요 구현 기능 및 기술  
+## 🧠 주요 구현 기능  
 
 ### 🔹 DirectX11 - Game Framework
 
-- 이펙트 시스템 : Map 기반 파싱, 싱글톤 매니저, 이펙트 인스턴싱 및 오브젝트 풀링 적용  
-- 카메라 컷신 : 키프레임 기반 보간 처리로 자연스러운 CutScene 전환 구현  
-- 충돌 시스템 : 충돌 그룹 분리 + 다중 Sphere Collider 처리 
-- 상태 머신 : 플레이어 FSM 설계로 상태 전이(Idle, Move, Attack 등) 관리  
-- 네비게이션 셀 : 삼각형 기반의 셀 생성 및 연결 구조를 활용한 셀 간 이동 가능 판단  
-- 물리 시스템 : Rigidbody 컴포넌트 설계, 중력 처리 
+- 이펙트 시스템: Map 기반 파싱, 싱글톤 매니저, 이펙트 인스턴싱 및 오브젝트 풀링 적용  
+- 카메라 컷신: 키프레임 기반 보간 처리로 자연스러운 CutScene 전환 구현  
+- 충돌 시스템: 충돌 그룹 분리 + 다중 Sphere Collider 처리 
+- 상태 머신: 플레이어 FSM 설계로 상태 전이(Idle, Move, Attack 등) 관리  
+- 네비게이션 셀: 삼각형 기반의 셀 생성 및 연결 구조를 활용한 셀 간 이동 가능 판단  
+- 물리 시스템: Rigidbody 컴포넌트 설계, 중력 처리 
 - Post-Processing: Multi-RenderTarget을 이용한 Blur, Dissolve 등
 
 <br>
@@ -70,12 +72,12 @@
 
 ---
 
+<br>
+
 ## ✉ Contact
 
 - Email: jeongex@gmail.com  
 - GitHub: [https://github.com/Yoo-Jeong](https://github.com/Yoo-Jeong)  
 - Portfolio PDF: [링크 삽입]
 
----
-
-
+<br>

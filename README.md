@@ -7,7 +7,7 @@
 
 ## 🧠 주요 구현 기능 및 기술  
 
-### 🔸 DirectX11 Game Framework
+### 🔹 DirectX11 - Game Framework
 
 - 이펙트 시스템 : Map 기반 파싱, 싱글톤 매니저, 이펙트 인스턴싱 및 오브젝트 풀링 적용  
 - 카메라 컷신 : 키프레임 기반 보간 처리로 자연스러운 CutScene 전환 구현  
@@ -19,14 +19,14 @@
 
 <br>
 
-### 🔸 Effect Tool (ImGui)
+### 🔹 Effect Tool (ImGui)
 - 실시간 파티클/메시 시각 조정 툴
 - JSON 저장 구조: 툴 없이도 값 수정 가능
 - 맵 컨테이너 기반 이펙트 클래스 설계
 
 <br>
 
-### 🔸 Unreal5 Third-Person (Blueprint)
+### 🔹 Unreal5 - Third-Person (Blueprint)
 - FSM 기반 캐릭터 상태 전환 구현
 - Combo 공격, 회피, 피격 처리
 - 간단한 AI Controller & NavMesh 기반 추적
@@ -34,7 +34,7 @@
 
 <br>
 
-### 🔸 Unity maon : 비대면 상담 플랫폼
+### 🔹 Unity - maon(비대면 상담 플랫폼)
 - Firebase 인증, Firebase Realtime Database
 - Agora SDK 기반 실시간 영상/음성 통화
 - 캐릭터 애니메이션 & 감정 카드 표현 연동
@@ -53,7 +53,7 @@
 ## 🛠️ 사용 기술 스택
 
 - 언어: `C++`, `C#`, `HLSL`
-- 엔진 & 프레임워크: `Unreal Engine 5`, `DirectX11`, `Unity`, `ImGui`
+- 엔진 & 프레임워크: `Unreal5`, `DirectX11`, `Unity`, `ImGui`
 - 네트워크 및 SDK: `Firebase`, `Agora`, `Photon`
 - 협업 도구: `Git`, `Notion`
 
@@ -67,9 +67,10 @@
 
 
 <br>
+
 ---
 
-## 📬 Contact
+## ✉ Contact
 
 - Email: jeongex@gmail.com  
 - GitHub: [https://github.com/Yoo-Jeong](https://github.com/Yoo-Jeong)  

@@ -1,8 +1,8 @@
-# 🎮 CodeSamples-GameClient
+# 🎮 CodeSamples-Game
 
 <br>
 
-게임 클라이언트 프로그래밍 경험을 기반으로,  
+게임 프로그래밍 경험을 기반으로,  
 직접 구현한 기능의 핵심 코드 샘플과 설명을 정리한 레포지토리입니다.
 
 <br>
@@ -28,11 +28,10 @@
 
 <br>
 
-### 🔹 Unreal5 - Third-Person (Blueprint)
-- FSM 기반 캐릭터 상태 전환 구현
-- Combo 공격, 회피, 피격 처리
-- 간단한 AI Controller & NavMesh 기반 추적
-- 위젯 기반 UI 시스템 (HP Bar, Game Over 등)
+### 🔹 MapleStory Worlds - UI
+- 전투: 플레이어 스킬 · 흙벽 / 광맥(채광)
+- 성장·경제: 세계수 레벨 · 스킬 관리 · 상점 · 농지
+- 월드·맵: 맵 타일셋 구성 · 성소(조명) · 월드맵 UI
 
 <br>
 
@@ -40,8 +39,7 @@
 - Firebase 인증, Firebase Realtime Database
 - Agora SDK 기반 실시간 영상/음성 통화
 - 캐릭터 애니메이션 & 감정 카드 표현 연동
-- 예약 시스템, 감정 일기, 상담 보고서 작성 기능 포함
-- 🎥 [영상 링크 또는 스크린샷](#)
+- 예약 시스템, 감정 일기, 상담 보고서 작성 기능
 
 <br>
 
@@ -54,10 +52,11 @@
 
 ## 🛠️ 사용 기술 스택
 
-- 언어: `C++`, `C#`, `HLSL`
-- 엔진 & 프레임워크: `Unreal5`, `DirectX11`, `Unity`, `ImGui`
+- 언어: `C++`, `C#`, `mLua`, `HLSL`
+- 엔진 & 프레임워크: `DirectX11`, `Unity`, `Unreal5`, `MapleStory Worlds`, `ImGui`
 - 네트워크 및 SDK: `Firebase`, `Agora`, `Photon`
 - 협업 도구: `Git`, `Notion`
+- 사용해본 AI 도구: `Claude code`
 
 <br>
 
@@ -65,6 +64,7 @@
 
 - 게임 시스템 구조화 및 유지보수가 용이한 설계
 - 게임 체감 중심의 물리/카메라 구현  
+- 게임 연출 관련
 - 툴/에디터 개발  
 
 
@@ -75,6 +75,6 @@
 
 - Email: jeongex@gmail.com  
 - GitHub: [https://github.com/Yoo-Jeong](https://github.com/Yoo-Jeong)  
-- Portfolio PDF: [링크 삽입]
+- Portfolio PDF: [https://drive.google.com/file/d/1f-dmnL7gyO3zWvxmKopXWAxlRYVQPb8m/view?usp=sharing](https://drive.google.com/file/d/1f-dmnL7gyO3zWvxmKopXWAxlRYVQPb8m/view?usp=sharing)
 
 <br>

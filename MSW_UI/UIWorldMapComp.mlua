@@ -1,0 +1,446 @@
+@Component
+script UIWorldMapComp extends UIPanelComp
+
+	property string DotYellowRUID = "3baf3cf30ffd4b9991230a7522a98eaa"
+
+	property string DotBlueRUID = "d5a23c34798f4f1fa47015ce27ed72ad"
+
+	property string DotRedRUID = "08c72ba25ae947cda1f0cea45e918bbf"
+
+	@Description("이동 팝업이 0에서 원래 크기로 커지는 데 걸리는 시간(초)")
+	property number POPUP_ANIM_DURATION = 0.14
+
+	@Description("팝업이 마커 위로 붙는 Y 오프셋 - 일반맵")
+	property number MARKER_YOFFSET_NORMAL = 80
+
+	@Description("팝업이 마커 위로 붙는 Y 오프셋 - 보스맵(팝업 배경이 짧아 더 낮게 붙인다)")
+	property number MARKER_YOFFSET_BOSS = 36
+
+	@Description("보스맵일 때 줄어드는 팝업 배경 높이")
+	property number POPUP_HEIGHT_BOSS = 74
+
+	@Description("구름이 바깥에서 제자리로 모여드는 인트로 연출 시간(초)")
+	property number CLOUD_INTRO_DURATION = 0.45
+
+	@Description("구역 해금 시 구름이 걷혀 사라지는 데 걸리는 시간(초)")
+	property number CLOUD_CLEAR_DURATION = 0.5
+
+	@Description("구름이 위아래로 둥둥 떠다니는 속도")
+	property number CLOUD_SWIM_SPEED = 1.6
+
+	@Description("구름이 위아래로 둥둥 떠다니는 폭(픽셀)")
+	property number CLOUD_SWIM_AMPLITUDE = 6
+
+	@Description("구름이 제자리 대비 바깥으로 퍼져 보이는 비율")
+	property number CLOUD_SPREAD_RATIO = 0.1
+
+	@HideFromInspector
+	property boolean IsOpen = false
+
+	@HideFromInspector
+	property any MarkersRoot = nil
+
+	@HideFromInspector
+	property any MovePopup = nil
+
+	@HideFromInspector
+	property any PopupSanctuaryButton = nil
+
+	@HideFromInspector
+	property any PopupSanctuaryLocked = nil
+
+	@HideFromInspector
+	property any PopupBgFullSize = nil
+
+	@HideFromInspector
+	property string SelectedMapCode = ""
+
+	@HideFromInspector
+	property number PopupAnimTime = 0
+
+	@HideFromInspector
+	property boolean PopupShown = false
+
+	@HideFromInspector
+	property any Clouds = nil
+
+	@HideFromInspector
+	property table CloudBases = {}
+
+	@HideFromInspector
+	property table CloudList = {}
+
+	@Description("지금 걷히는 중인 구름 [구름이름] = 걷힘 경과시간(초). 예: [\"2_Clouds\"] = 0.13. 키가 있으면 걷히는 중, 없으면 아님")
+	@HideFromInspector
+	property table UnlockClouds = {}
+
+	@HideFromInspector
+	property number IntroTime = 0
+
+	@HideFromInspector
+	property number AnimTime = 0
+
+	@ExecSpace("ClientOnly")
+	method void ClientInit()
+		local background = self.Entity:GetChildByName("Background")
+		local mapPanel = background:GetChildByName("MapPanel")
+
+		self.MarkersRoot = mapPanel:GetChildByName("Markers")
+		self.MovePopup = mapPanel:GetChildByName("MovePopup")
+		self.Clouds = mapPanel:GetChildByName("Clouds")
+
+		-- 구역 이름표(엔티티명 = 구역코드 "1"~"5") 현재 1구역만
+		local regionLabels = mapPanel:GetChildByName("RegionLabels")
+		if isvalid(regionLabels) then
+			for _, regionLabel in ipairs(regionLabels.Children:ToTable()) do
+				local regionText = regionLabel:GetChildByName("UIText")
+				if isvalid(regionText) then
+					regionText.TextGUIRendererComponent.Text = _LocalizeManager:GetMapName(regionLabel.Name)
+				end
+			end
+		end
+
+		-- 닫기 버튼
+		local closeButton = background:GetChildByName("CloseButton")
+		if isvalid(closeButton) then
+			closeButton:ConnectEvent(ButtonClickEvent, function()
+				_UIManager:RequestCloseUI(_EUIGroupType.WINDOW, _EUIWindowType.WORLDMAP)
+			end)
+		end
+
+		self:InitMarkers()
+		self:InitPopup()
+		self:CacheCloudBases()
+		self:InitKeyBinding()
+		_UIManager:InitDrag(_EUIGroupType.WINDOW, _EUIWindowType.WORLDMAP)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InitKeyBinding()
+		self:RegisterKeyBinding(KeyboardKey.Escape, function()
+			-- 팝업이 떠 있으면 ESC로 팝업만 닫고, 없으면 월드맵 창을 닫는다
+			if self.PopupShown then
+				self:HidePopup()
+			else
+				_UIManager:RequestCloseUI(_EUIGroupType.WINDOW, _EUIWindowType.WORLDMAP)
+			end
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InitMarkers()
+		-- 마커 1회 세팅: 맵 이름, 마을은 빨강 스크롤, 마을 외에는 클릭 연결
+		if not isvalid(self.MarkersRoot) then
+			return
+		end
+		for _, marker in ipairs(self.MarkersRoot.Children:ToTable()) do
+			local mapCode = marker.Name
+
+			local label = marker:GetChildByName("Label")
+			if isvalid(label) then
+				label.TextGUIRendererComponent.Text = _LocalizeManager:GetMapName(mapCode)
+			end
+
+			-- 클릭 가능한 마커(작은 스크롤 = UIButton)만 팝업 연결. 마을은 UIButton이 없어 클릭 안 됨
+			local button = marker:GetChildByName("UIButton")
+			if isvalid(button) then
+				local code = mapCode
+				button:ConnectEvent(ButtonClickEvent, function()
+					self:ShowPopup(code)
+				end)
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InitPopup()
+		if not isvalid(self.MovePopup) then
+			return
+		end
+		self.PopupSanctuaryButton = self.MovePopup:GetChildByName("SanctuaryButton")
+		self.PopupSanctuaryLocked = self.MovePopup:GetChildByName("SanctuaryLockedText")
+
+		-- 팝업 배경의 에디터 원래 크기를 저장해둔다(보스맵에서 높이를 줄였다가 일반맵에서 이 값으로 복구)
+		local popupBg = self.MovePopup:GetChildByName("PopupBg")
+		if isvalid(popupBg) then
+			local fullSize = popupBg.UITransformComponent.RectSize
+			self.PopupBgFullSize = Vector2(fullSize.x, fullSize.y)
+		end
+
+		local entranceButton = self.MovePopup:GetChildByName("EntranceButton")
+		if isvalid(entranceButton) then
+			entranceButton:ConnectEvent(ButtonClickEvent, function()
+				-- 같은 맵으로 이동하면 네이티브 맵 전환 페이드가 안 나오므로 디졸브로 전환 연출을 대신 넣는다
+				if _UserService.LocalPlayer.CurrentMapName == self.SelectedMapCode then
+					_ScreenTransitionService:DissolveScreen(0.3, false, false)
+				end
+				_TeleportManager:RequestTeleportEntrance(self.SelectedMapCode)
+				_UIManager:RequestCloseUI(_EUIGroupType.WINDOW, _EUIWindowType.WORLDMAP)
+			end)
+		end
+		if isvalid(self.PopupSanctuaryButton) then
+			self.PopupSanctuaryButton:ConnectEvent(ButtonClickEvent, function()
+				if _UserService.LocalPlayer.PlayerMapComp:IsSanctuaryActive(self.SelectedMapCode) then
+					-- 성소 이동 -> 디졸브로 전환 연출
+					if _UserService.LocalPlayer.CurrentMapName == self.SelectedMapCode then
+						_ScreenTransitionService:DissolveScreen(0.3, false, false)
+					end
+					_TeleportManager:RequestTeleportSanctuary(self.SelectedMapCode)
+					_UIManager:RequestCloseUI(_EUIGroupType.WINDOW, _EUIWindowType.WORLDMAP)
+				elseif isvalid(self.PopupSanctuaryLocked) then
+					self.PopupSanctuaryLocked.Enable = true
+				end
+			end)
+		end
+		local popupCloseButton = self.MovePopup:GetChildByName("PopupCloseButton")
+		if isvalid(popupCloseButton) then
+			popupCloseButton:ConnectEvent(ButtonClickEvent, function()
+				self:HidePopup()
+			end)
+		end
+
+		-- 팝업은 항상 켜두고 크기 0으로 숨긴다. (껐다 켜면 켜지는 첫 프레임에 원래 위치(중앙)로 한 번 그려져서 튄다)
+		self.MovePopup.Enable = true
+		self:HidePopup()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void CacheCloudBases()
+		-- 구름 목록과 제자리 위치를 한 번만 저장해둔다(매 프레임 도는 OnUpdate에서 다시 안 만들도록)
+		self.CloudBases = {}
+		self.CloudList = {}
+		if not isvalid(self.Clouds) then
+			return
+		end
+		self.CloudList = self.Clouds.Children:ToTable()
+		for _, cloud in ipairs(self.CloudList) do
+			local pos = cloud.UITransformComponent.Position
+			self.CloudBases[cloud.Name] = { x = pos.x, y = pos.y, z = pos.z }
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshMarkers()
+		-- 해금된 구역만 표시, 점 색은 현재위치(파랑)/마을(빨강)/사냥터,보스(노랑)
+		if not isvalid(self.MarkersRoot) then
+			return
+		end
+		local mapComp = _UserService.LocalPlayer.PlayerMapComp
+		local currentMap = _UserService.LocalPlayer.CurrentMapName
+		for _, marker in ipairs(self.MarkersRoot.Children:ToTable()) do
+			local mapCode = marker.Name
+			local unlocked = mapComp:IsRegionUnlocked(_MapManager:GetRegion(mapCode))
+			marker.Enable = unlocked
+			if unlocked then
+				local dot = marker:GetChildByName("Dot")
+				if isvalid(dot) then
+					dot.SpriteGUIRendererComponent.ImageRUID = self:GetDotRUID(mapCode, currentMap)
+					-- 현재 플레이어 위치(파란 점)만 크게
+					if mapCode == currentMap then
+						dot.UITransformComponent.UIScale = Vector3(1.3, 1.3, 1)
+					else
+						dot.UITransformComponent.UIScale = Vector3(1, 1, 1)
+					end
+				end
+			end
+		end
+
+		-- 해금된 구역 이름표만 표시(라벨 엔티티명 = 구역코드)
+		local regionLabels = self.MarkersRoot.Parent:GetChildByName("RegionLabels")
+		if isvalid(regionLabels) then
+			for _, regionLabel in ipairs(regionLabels.Children:ToTable()) do
+				regionLabel.Enable = mapComp:IsRegionUnlocked(regionLabel.Name)
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshClouds()
+		-- 구름 그룹(엔티티명 = "{구역코드}_Clouds") 표시 정리
+		-- 잠긴 구역: 구름 덮은 채 표시(인트로/둥둥 대상) 해금+이미 본 구역: 숨김
+		-- 방금 해금된 구역: UnlockClouds에 들어 있어 보이게 두고 OnUpdate가 걷어낸다.
+
+		if not isvalid(self.Clouds) then
+			return
+		end
+		local mapComp = _UserService.LocalPlayer.PlayerMapComp
+		for _, cloud in ipairs(self.CloudList) do
+			local region = _MapManager:GetRegion(cloud.Name)
+			if not mapComp:IsRegionUnlocked(region) then
+				-- 잠김: 덮기(다시 잠긴 구역이면 남아있던 걷힘 예약도 취소)
+				self.UnlockClouds[cloud.Name] = nil
+				cloud.Enable = true
+			elseif self.UnlockClouds[cloud.Name] ~= nil then
+				-- 해금 + 걷힘 예약: 보이게 두고 OnUpdate가 걷어냄
+				cloud.Enable = true
+			else
+				-- 해금 + 이미 봄: 숨김
+				cloud.Enable = false
+			end
+		end
+	end
+
+	method boolean IsTown(string mapCode)
+		return mapCode == "0"
+	end
+
+	method string GetDotRUID(string mapCode, string currentMap)
+		if mapCode == currentMap then
+			return self.DotBlueRUID
+		end
+		if self:IsTown(mapCode) then
+			return self.DotRedRUID
+		end
+		return self.DotYellowRUID
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ShowPopup(string mapCode)
+		-- 클릭한 마커 위로 팝업을 옮겨 띄운다
+		self.SelectedMapCode = mapCode
+		if not isvalid(self.MovePopup) then
+			return
+		end
+
+		-- 성소 안내문은 기본 숨김(비활성 성소로 이동 시도할 때만 뜸)
+		if isvalid(self.PopupSanctuaryLocked) then
+			self.PopupSanctuaryLocked.Enable = false
+		end
+		-- 보스맵(맵코드에 _BOSS 포함)은 성소가 없으므로 성소로 이동 버튼을 숨기고 팝업 배경도 줄인다
+		-- (Enable 토글은 켜지는 첫 프레임에 에디터 원래 위치로 튀어 잠깐 보이므로 크기 0으로만 숨김/표시)
+		local isBossMap = string.find(mapCode, "_BOSS") ~= nil
+		if isvalid(self.PopupSanctuaryButton) then
+			if isBossMap then
+				self.PopupSanctuaryButton.UITransformComponent.UIScale = Vector3(0, 0, 1)
+			else
+				self.PopupSanctuaryButton.UITransformComponent.UIScale = Vector3(1, 1, 1)
+			end
+		end
+		-- 입구 버튼만 남는 보스맵일 때 PopupBg를 짧게 줄인다(너비는 원래값 유지) 일반맵은 에디터 원래 크기로 복구
+		local popupBg = self.MovePopup:GetChildByName("PopupBg")
+		if isvalid(popupBg) and self.PopupBgFullSize ~= nil then
+			if isBossMap then
+				popupBg.UITransformComponent.RectSize = Vector2(self.PopupBgFullSize.x, self.POPUP_HEIGHT_BOSS)
+			else
+				popupBg.UITransformComponent.RectSize = self.PopupBgFullSize
+			end
+		end
+
+		-- 마커 위치로 옮긴 뒤, 크기 0에서 시작해 OnUpdate가 키운다. (Enable 토글 없이 크기로만 보였다 숨겼다 함)
+		-- 보스맵 팝업은 배경을 잘라 짧아졌으므로 마커와의 거리(Y offset)를 일반맵보다 더 낮춰 마커에 붙인다
+		local marker = self.MarkersRoot:GetChildByName(mapCode)
+		if isvalid(marker) then
+			local yOffset = self.MARKER_YOFFSET_NORMAL
+			if isBossMap then
+				yOffset = self.MARKER_YOFFSET_BOSS
+			end
+			local pos = self.MarkersRoot.UITransformComponent.Position + marker.UITransformComponent.Position
+			self.MovePopup.UITransformComponent.Position = pos + Vector3(0, yOffset, 0)
+		end
+
+		self.PopupAnimTime = 0
+		self.MovePopup.UITransformComponent.UIScale = Vector3(0, 0, 1)
+		self.PopupShown = true
+	end
+
+	@ExecSpace("ClientOnly")
+	method void HidePopup()
+		-- 팝업 숨김: 크기 0으로만 감춘다(Enable은 안 끔 -> 켜지는 첫 프레임 튐 방지)
+		if not isvalid(self.MovePopup) then
+			return
+		end
+		self.MovePopup.UITransformComponent.UIScale = Vector3(0, 0, 1)
+		self.PopupShown = false
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnUpdate(number delta)
+		if not self.IsOpen then
+			return
+		end
+
+		-- 팝업 등장 스케일 애니메이션(작은 상태에서 커지기)
+		if isvalid(self.MovePopup) and self.PopupShown then
+			self.PopupAnimTime = self.PopupAnimTime + delta
+			local popupRatio = self.PopupAnimTime / self.POPUP_ANIM_DURATION
+			if popupRatio > 1 then popupRatio = 1 end
+			local popupScale = 1 - (1 - popupRatio) * (1 - popupRatio) * (1 - popupRatio)
+			self.MovePopup.UITransformComponent.UIScale = Vector3(popupScale, popupScale, 1)
+		end
+
+		-- 구름 연출: 열림 직후 바깥에서 제자리로 모여들며 나타나고, 이후 제자리에서 둥둥
+		if not isvalid(self.Clouds) then
+			return
+		end
+
+		self.IntroTime = self.IntroTime + delta
+		self.AnimTime = self.AnimTime + delta
+
+		local introRatio = self.IntroTime / self.CLOUD_INTRO_DURATION
+		if introRatio > 1 then
+			introRatio = 1
+		end
+
+		local index = 0
+		for _, cloud in ipairs(self.CloudList) do
+			local base = self.CloudBases[cloud.Name]
+			if base ~= nil then
+				index = index + 1
+				local clearTime = self.UnlockClouds[cloud.Name]
+				if clearTime ~= nil then
+					-- 방금 해금된 구역 구름 걷힘: 인트로의 반대 - 제자리에서 바깥으로 밀려나며 페이드아웃
+					clearTime = clearTime + delta
+					local clearRatio = clearTime / self.CLOUD_CLEAR_DURATION
+					if clearRatio >= 1 then
+						cloud.Enable = false
+						self.UnlockClouds[cloud.Name] = nil
+					else
+						local spread = 1 + clearRatio * self.CLOUD_SPREAD_RATIO				-- 제자리(1배) -> 바깥(1+비율 배)
+						local SwimOffsetY = math.sin(self.AnimTime * self.CLOUD_SWIM_SPEED + index) * self.CLOUD_SWIM_AMPLITUDE   -- 상하 둥둥
+						cloud.UITransformComponent.Position = Vector3(base.x * spread, base.y * spread + SwimOffsetY, base.z)
+						cloud.SpriteGUIRendererComponent.Color = Color(1, 1, 1, 1 - clearRatio)
+						self.UnlockClouds[cloud.Name] = clearTime
+					end
+				elseif cloud.Enable then
+					-- 잠긴 구역 구름: 기존 인트로(몰려들기) + 둥둥
+					local spread = 1 + (1 - introRatio) * self.CLOUD_SPREAD_RATIO				-- 바깥(1+비율 배) -> 제자리(1배)
+					local SwimOffsetY = math.sin(self.AnimTime * self.CLOUD_SWIM_SPEED + index) * self.CLOUD_SWIM_AMPLITUDE   -- 상하 둥둥
+					cloud.UITransformComponent.Position = Vector3(base.x * spread, base.y * spread + SwimOffsetY, base.z)
+					cloud.SpriteGUIRendererComponent.Color = Color(1, 1, 1, introRatio)
+				end
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenPanel()
+		self.IsOpen = true
+		self.IntroTime = 0
+		self.AnimTime = 0
+		self:HidePopup()
+		self:RefreshMarkers()
+		self:RefreshClouds()
+		__base:OpenPanel()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClosePanel()
+		self.IsOpen = false
+		self:HidePopup()
+		__base:ClosePanel()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleEnterGameClientEvt(EnterGameClientEvt event)
+		self:ClientInit()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleRegionUnlockedEvt(RegionUnlockedEvt event)
+		-- 새로 해금된 구역을 다음 월드맵 열 때 걷어낼 대상으로 표시
+		self.UnlockClouds[event.Region .. "_Clouds"] = 0
+	end
+
+end

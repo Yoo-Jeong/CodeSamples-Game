@@ -1,0 +1,210 @@
+@Component
+script UIShopSlotComp extends Component
+
+	@Description("고정 상품 줄의 슬롯 바탕 이미지")
+	property string FixedSlotBGRUID = "cee771ff03dd4a459acdab737178556f"
+
+	@Description("랜덤 상품 줄의 슬롯 바탕 이미지")
+	property string RandomSlotBGRUID = "8aeebb40cd1f47d49183530dc4aef147"
+
+	@Description("이 줄이 속한 상점 패널. 스폰할 때 UIShopComp가 넣어준다")
+	@HideFromInspector
+	property any Panel = nil
+
+	@HideFromInspector
+	property any selectFrame = nil
+
+	@HideFromInspector
+	property any slotBG = nil
+
+	@HideFromInspector
+	property any icon = nil
+
+	@HideFromInspector
+	property any nameText = nil
+
+	@HideFromInspector
+	property any descText = nil
+
+	@HideFromInspector
+	property any countText = nil
+
+	@HideFromInspector
+	property any priceText = nil
+
+	@HideFromInspector
+	property integer itemCode = 0
+
+	@Description("이 캐릭터에게 남은 재고. -1이면 무제한, 0이면 품절, N이면 N개")
+	@HideFromInspector
+	property integer remaining = 0
+
+	@HideFromInspector
+	property integer price = 0
+
+	@Description("살 개수. 품절이면 0")
+	@HideFromInspector
+	property integer count = 1
+
+	@ExecSpace("ClientOnly")
+	method void ClientInit()
+		self.selectFrame = self.Entity:GetChildByName("SelectFrame")
+
+		local itemPanel = self.Entity:GetChildByName("itemPanel")
+		self.slotBG = itemPanel:GetChildByName("slotBG")
+		self.icon = itemPanel:GetChildByName("item_icon")
+		self.nameText = itemPanel:GetChildByName("ItemName")
+		self.descText = itemPanel:GetChildByName("ItemDesc")
+
+		local countPanel = self.Entity:GetChildByName("CountPanel")
+		self.countText = countPanel:GetChildByName("CountBG"):GetChildByName("CountText")
+
+		local minusButton = countPanel:GetChildByName("MinusButton")
+		minusButton:ConnectEvent(ButtonClickEvent, function() self:ChangeCount(-1) end)
+
+		local plusButton = countPanel:GetChildByName("PlusButton")
+		plusButton:ConnectEvent(ButtonClickEvent, function() self:ChangeCount(1) end)
+
+		local pricePanel = self.Entity:GetChildByName("PricePanel")
+		self.priceText = pricePanel:GetChildByName("PriceText")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSlot(integer itemCode, integer remaining, integer price, boolean isFixed)
+		-- 상품 한 줄을 채운다. 살 개수는 1부터 시작하되, 품절이면 0
+		self.itemCode = itemCode
+		self.remaining = remaining
+		self.price = price
+
+		-- 품절(0)이면 0, 그 외(무제한 -1 또는 재고 있음)면 1부터
+		if remaining == 0 then
+			self.count = 0
+		else
+			self.count = 1
+		end
+
+		-- 고정 상품 줄과 랜덤 상품 줄은 슬롯 바탕 이미지가 다르다
+		if isFixed then
+			self.slotBG.SpriteGUIRendererComponent.ImageRUID = self.FixedSlotBGRUID
+		else
+			self.slotBG.SpriteGUIRendererComponent.ImageRUID = self.RandomSlotBGRUID
+		end
+
+		local codeText = tostring(itemCode)
+		self.nameText.TextGUIRendererComponent.Text = _LocalizeManager:GetItemName(codeText)
+		self.descText.TextGUIRendererComponent.Text = self:GetShopItemDesc(codeText)
+
+		-- 아이콘 데이터셋에 없는 아이템이면 nil이 온다. 아이콘만 비우고 줄은 그대로 그린다
+		---@type SItemIconData
+		local iconData = _ItemData:GetIconData(itemCode)
+		if iconData ~= nil then
+			self.icon.SpriteGUIRendererComponent.ImageRUID = iconData.IconRawRuid
+		else
+			self.icon.SpriteGUIRendererComponent.ImageRUID = ""
+			_LogManager:LogWarning(string.format("[UIShopSlotComp] 아이콘 데이터 없음 code=%d", itemCode))
+		end
+
+		self:RefreshCount()
+		self:SetSelected(false)
+	end
+
+	@ExecSpace("ClientOnly")
+	method string GetShopItemDesc(string codeText)
+		-- 상점 줄에 쓸 아이템 설명(\n이후만)
+		-- 데이터에 글자 그대로의 \n 과 진짜 줄바꿈이 섞여 들어 있어 둘 다 찾는다.
+
+		local desc = _LocalizeManager:GetItemDesc(codeText)
+		if _UtilLogic:IsNilorEmptyString(desc) then
+			return ""
+		end
+
+		local cutAt, cutEnd = string.find(desc, "\\n", 1, true)
+		if cutAt == nil then
+			cutAt, cutEnd = string.find(desc, "\n", 1, true)
+		end
+		if cutAt == nil then
+			-- 구분자가 없으면 통째로 쓴다
+			return desc
+		end
+
+		-- 자른 뒤 앞뒤에 남는 공백과 줄바꿈을 털어낸다
+		return string.match(string.sub(desc, cutEnd + 1), "^%s*(.-)%s*$")
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetRemaining(integer remaining)
+		-- 구매 후 남은 재고를 반영한다. 살 개수는 남은 만큼으로 줄이고, 품절이면 0으로 만든다
+		self.remaining = remaining
+
+		if remaining == 0 then
+			self.count = 0
+		elseif remaining == -1 then
+			-- 무제한: 상한 없음. 최소 1은 유지
+			if self.count < 1 then
+				self.count = 1
+			end
+		else
+			if self.count < 1 then
+				self.count = 1
+			elseif self.count > remaining then
+				self.count = remaining
+			end
+		end
+
+		self:RefreshCount()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ChangeCount(integer delta)
+		-- 수량 조절: 1개 이상, 남은 재고 이하로만(무제한이면 상한 없음). 수량을 건드리면 그 줄이 선택된다.
+		-- 품절(0)인 줄은 수량을 못 바꾸지만, 클릭한 셈이니 선택은 되게 둔다
+		if self.remaining ~= 0 then
+			local newCount = self.count + delta
+			if newCount < 1 then
+				newCount = 1
+			end
+			if self.remaining ~= -1 and newCount > self.remaining then
+				newCount = self.remaining
+			end
+
+			self.count = newCount
+			self:RefreshCount()
+		end
+
+		self.Panel:SelectSlot(self.Entity)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshCount()
+		-- 수량과 총액(단가 x 수량)을 다시 그린다
+		self.countText.TextGUIRendererComponent.Text = tostring(self.count)
+		self.priceText.TextGUIRendererComponent.Text = _StringUtility:AddComma(tostring(self.price * self.count))
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SetSelected(boolean selected)
+		self.selectFrame:SetEnable(selected)
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer GetItemCode()
+		return self.itemCode
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer GetCount()
+		return self.count
+	end
+
+	@ExecSpace("ClientOnly")
+	method integer GetTotalPrice()
+		return self.price * self.count
+	end
+
+	@EventSender("Self")
+	handler HandleButtonClickEvent(ButtonClickEvent event)
+		-- 줄을 클릭하면 그 줄이 선택된다
+		self.Panel:SelectSlot(self.Entity)
+	end
+
+end

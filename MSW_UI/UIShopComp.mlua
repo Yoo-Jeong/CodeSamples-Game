@@ -1,0 +1,426 @@
+@Component
+script UIShopComp extends UIPanelComp
+
+	@HideFromInspector
+	property any NpcPortrait = nil
+
+	@HideFromInspector
+	property any SpeechText = nil
+
+	@HideFromInspector
+	property any BuyButton = nil
+
+	@HideFromInspector
+	property any ScrollView = nil
+
+	@HideFromInspector
+	property any SlotTemplate = nil
+
+	@Description("복제해 만든 상품 줄 목록")
+	@HideFromInspector
+	property table SlotList = {}
+
+	@Description("지금 열려 있는 상점 번호")
+	@HideFromInspector
+	property integer ShopId = 0
+
+	@Description("지금 선택된 상품 줄. 아무것도 안 골랐으면 nil")
+	@HideFromInspector
+	property any SelectedSlot = nil
+
+	@Description("하단 RefreshTimer의 TimeText 렌더러. 남은 시간을 여기 써넣는다")
+	@HideFromInspector
+	property any TimeText = nil
+
+	@Description("인게임 시간 변화(ChangeGameTimeEvt) 구독 핸들")
+	@HideFromInspector
+	property any TimeEvtHandler = nil
+
+	@Description("남은 시간 갱신 반복 타이머 id. 0이면 안 돎")
+	@HideFromInspector
+	property integer TickTimerId = 0
+
+	@ExecSpace("ClientOnly")
+	method void ClientInit()
+		local background = self.Entity:GetChildByName("Background")
+
+		local npcPanel = background:GetChildByName("NpcPanel")
+		self.NpcPortrait = npcPanel:GetChildByName("NpcPortrait")
+		self.SpeechText = npcPanel:GetChildByName("SpeechBox"):GetChildByName("UIText")
+
+		self.BuyButton = background:GetChildByName("BuyButton")
+		self.BuyButton:ConnectEvent(ButtonClickEvent, function() self:Buy() end)
+
+		local sellButton = background:GetChildByName("SellButton")
+		if isvalid(sellButton) then
+			sellButton:ConnectEvent(ButtonClickEvent, function() self:SellItem() end)
+		end
+
+		self.ScrollView = background:GetChildByName("ItemScrollView")
+		self.SlotTemplate = self.ScrollView:GetChildByName("item_slot")
+		self.SlotTemplate:SetEnable(false)
+
+		local closeButton = background:GetChildByName("CloseButton")
+		closeButton:ConnectEvent(ButtonClickEvent, function()
+			_UIManager:RequestCloseUI(_EUIGroupType.WINDOW, _EUIWindowType.SHOP)
+		end)
+
+		local bottomBar = background:GetChildByName("BottomBar")
+		if isvalid(bottomBar) then
+			local refreshButton = bottomBar:GetChildByName("RefreshButton")
+			if isvalid(refreshButton) then
+				refreshButton:ConnectEvent(ButtonClickEvent, function() self:Refresh() end)
+			end
+
+			-- 새로고침 비용 ShopManager의 값과 맞춘다. 실제 차감도 이 값으로 이뤄진다.
+			local refreshCost = bottomBar:GetChildByName("RefreshCost")
+			if isvalid(refreshCost) then
+				local costText = refreshCost:GetChildByName("CostText")
+				if isvalid(costText) then
+					costText.TextGUIRendererComponent.Text = _StringUtility:AddComma(tostring(_ShopManager.RefreshCost))
+				end
+			end
+
+			-- 자동 새로고침까지 남은 시간을 표시할 TimeText
+			local refreshTimer = bottomBar:GetChildByName("RefreshTimer")
+			if isvalid(refreshTimer) then
+				local timeText = refreshTimer:GetChildByName("TimeText")
+				if isvalid(timeText) then
+					self.TimeText = timeText.TextGUIRendererComponent
+				end
+			end
+		end
+
+		self:InitKeyBinding()
+		_UIManager:InitDrag(_EUIGroupType.WINDOW, _EUIWindowType.SHOP)
+
+		-- 인게임 시(hour)가 바뀔 때마다 카운트다운 기준점을 새로 잡아 오차가 쌓이지 않게 한다.
+		-- ClientInit이 다시 불려도 구독이 중복되지 않도록 이전 구독은 먼저 끊는다.
+		local user = _UserService.LocalPlayer
+		if self.TimeEvtHandler ~= nil then
+			user:DisconnectEvent(ChangeGameTimeEvt, self.TimeEvtHandler)
+		end
+		self.TimeEvtHandler = user:ConnectEvent(ChangeGameTimeEvt, function(event)
+			self:OnGameTimeAnchor(event)
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void InitKeyBinding()
+		self:RegisterKeyBinding(KeyboardKey.Escape, function()
+			_UIManager:RequestCloseUI(_EUIGroupType.WINDOW, _EUIWindowType.SHOP)
+		end)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OpenShop(integer shopId, string portraitRUID, string dialogue)
+		-- NPC가 부른다. 그 NPC의 상점 내용으로 채운 뒤 창을 연다
+		self.ShopId = shopId
+
+		if portraitRUID ~= "" then
+			self.NpcPortrait.SpriteGUIRendererComponent.ImageRUID = portraitRUID
+		end
+		self.SpeechText.TextGUIRendererComponent.Text = dialogue
+
+		-- 랜덤 진열은 서버가 뽑아서 들고 있다. 아직 못 받았으면 요청한다
+		-- 도착하면 ShopLineupEvt가 와서 다시 그린다. 그 전까진 고정 상품만 보인다
+		local shopComp = _UserService.LocalPlayer.PlayerShopComp
+		if isvalid(shopComp) and shopComp.Lineup[shopId] == nil then
+			shopComp:RequestShopLineup(shopId)
+		end
+
+		self:RenderGoods()
+		_UIManager:RequestOpenUI(_EUIGroupType.WINDOW, _EUIWindowType.SHOP)
+
+		-- 상점을 열면 팔 물건을 고를 수 있게 인벤토리도 같이 연다
+		_UIManager:RequestOpenUI(_EUIGroupType.WINDOW, _EUIWindowType.INVENTORY)
+
+		-- 자동 새로고침까지 남은 시간 카운트다운을 시작한다.
+		self:StartRefreshCountdown()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Refresh()
+		-- 새로고침 버튼
+		-- 비용 차감이랑 다시 뽑기는 서버가 한다. 새 진열은 ShopLineupEvt로 돌아온다
+		if self.ShopId == 0 then
+			return
+		end
+		_UserService.LocalPlayer.PlayerShopComp:RequestRefreshShop(self.ShopId)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RenderGoods()
+		-- 고정 상품을 먼저, 그 아래 랜덤 상품을 줄로 펼친다. 남는 줄은 숨긴다.
+		local shopComp = _UserService.LocalPlayer.PlayerShopComp
+		local fixed = _ShopManager:GetFixedGoods(self.ShopId)
+
+		-- 랜덤 진열은 서버가 내려준 아이템코드 목록이다. 가격이랑 재고는 코드로 다시 조회한다
+		local randomCodes = {}
+		if isvalid(shopComp) then
+			randomCodes = shopComp.Lineup[self.ShopId] or {}
+		end
+
+		-- 한 목록으로 합친다. 앞쪽 fixedCount 줄이 고정 상품이다.
+		local lines = {}
+		for _, line in ipairs(fixed) do
+			table.insert(lines, line)
+		end
+		local fixedCount = #lines
+		for _, itemCode in ipairs(randomCodes) do
+			local line = _ShopManager:GetGoodsLine(self.ShopId, itemCode)
+			if line ~= nil then
+				table.insert(lines, line)
+			end
+		end
+
+		self:SpawnSlots(#lines)
+		self.SelectedSlot = nil
+
+		for i, slot in ipairs(self.SlotList) do
+			local line = lines[i]
+			if line == nil then
+				slot:SetEnable(false)
+			else
+				slot:SetEnable(true)
+
+				local remaining = 0
+				if isvalid(shopComp) then
+					remaining = shopComp:GetRemainingStock(self.ShopId, line.ItemId)
+				end
+
+				-- 가격은 이미 진열 줄(line)에 들어 있다.
+				slot.UIShopSlotComp:SetSlot(line.ItemId, remaining, line.Price, i <= fixedCount)
+			end
+		end
+
+		self:RefreshBuyButton()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SpawnSlots(integer count)
+		-- 필요한 만큼만 줄을 만들어 두고 재사용한다
+		for i = #self.SlotList + 1, count do
+			local slot = _SpawnService:SpawnByEntity(self.SlotTemplate, "Slot", Vector3.zero, self.ScrollView)
+			slot:SetEnable(true)
+			slot.UIShopSlotComp.Panel = self
+			slot.UIShopSlotComp:ClientInit()
+			self.SlotList[i] = slot
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SelectSlot(Entity slot)
+		-- 고른 줄만 테두리를 켜고 나머지는 끈다
+		self.SelectedSlot = slot
+
+		for _, other in ipairs(self.SlotList) do
+			other.UIShopSlotComp:SetSelected(other == slot)
+		end
+
+		self:RefreshBuyButton()
+	end
+
+	@ExecSpace("ClientOnly")
+	method void RefreshBuyButton()
+		-- 고른 줄이 없거나, 품절이거나, 메소가 모자라면 구매 버튼을 흐리게 하고 못 누르게 한다
+		local canBuy = false
+		if isvalid(self.SelectedSlot) then
+			local slotComp = self.SelectedSlot.UIShopSlotComp
+			local meso = _UserService.LocalPlayer.PlayerInventoryComp:GetMeso()
+			canBuy = slotComp:GetCount() > 0 and meso >= slotComp:GetTotalPrice()
+		end
+
+		self.BuyButton.ButtonComponent.Enable = canBuy
+		if canBuy then
+			self.BuyButton.SpriteGUIRendererComponent.Color = Color(1, 1, 1, 1)
+		else
+			--self.BuyButton.SpriteGUIRendererComponent.Color = Color(0.6, 0.6, 0.6, 1)
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void Buy()
+		-- 고른 줄 하나를 그 수량만큼 산다.
+		if not isvalid(self.SelectedSlot) then
+			return
+		end
+
+		local slotComp = self.SelectedSlot.UIShopSlotComp
+		_UserService.LocalPlayer.PlayerShopComp:RequestBuy(self.ShopId, slotComp:GetItemCode(), slotComp:GetCount())
+	end
+
+	@ExecSpace("ClientOnly")
+	method void SellItem()
+		-- 판매 버튼
+		local invPanel = _UIManager:GetUIPanel(_EUIGroupType.WINDOW, _EUIWindowType.INVENTORY)
+		if isvalid(invPanel) then
+			invPanel.UIInventoryComp:SellSelected()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ClosePanel()
+		__base:ClosePanel()
+
+		-- 창을 닫으면 남은 시간 갱신을 멈춘다.
+		self:StopRefreshCountdown()
+
+		-- 상점을 닫으면 같이 열었던 인벤토리도 닫는다
+		_UIManager:RequestCloseUI(_EUIGroupType.WINDOW, _EUIWindowType.INVENTORY)
+
+		self.ShopId = 0
+		self.SelectedSlot = nil
+	end
+
+	@ExecSpace("ClientOnly")
+	method void ApplyRemaining(integer itemCode, integer remaining)
+		-- 그 아이템을 파는 줄을 찾아 남은 재고를 다시 그린다
+		for _, slot in ipairs(self.SlotList) do
+			local slotComp = slot.UIShopSlotComp
+			if slotComp:GetItemCode() == itemCode then
+				slotComp:SetRemaining(remaining)
+				return
+			end
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void OnGameTimeAnchor(ChangeGameTimeEvt event)
+		-- 서버가 확정한 인게임 시(hour)를 기준으로 카운트다운 기준점을 잡는다.
+		-- 이후엔 현실 시간이 흐른 만큼만 더해 계산하므로, 매 시 갱신되어 오차가 쌓이지 않는다.
+		self._T.anchorElapsed = _UtilLogic.ElapsedSeconds
+		self._T.anchorSecOfDay = event.Hour * 3600
+		if self.ShopId ~= 0 then
+			self:UpdateTimeText()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StartRefreshCountdown()
+		-- 상점이 열려 있는 동안만 1초마다 남은 시간을 다시 그린다.
+		self:StopRefreshCountdown()
+		self._T.lastTimeStr = nil   -- 처음엔 무조건 한 번 쓰도록 캐시를 비운다
+		self:UpdateTimeText()
+		self.TickTimerId = _TimerService:SetTimerRepeat(function() self:UpdateTimeText() end, 1.0)
+	end
+
+	@ExecSpace("ClientOnly")
+	method void StopRefreshCountdown()
+		-- 반복 타이머를 멈춘다.
+		if self.TickTimerId ~= 0 then
+			_TimerService:ClearTimer(self.TickTimerId)
+			self.TickTimerId = 0
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	method void UpdateTimeText()
+		-- 다음 인게임 자정까지 남은 인게임초를 현실 시간으로 환산해 TimeText에 써넣는다.
+		-- 표시 문자열이 지난번과 같으면 렌더러 갱신을 건너뛴다
+		if not isvalid(self.TimeText) then
+			return
+		end
+
+		local str
+		if self._T.anchorElapsed == nil then
+			-- 아직 시간 이벤트를 못 받았다.
+			str = "--:--"
+		else
+			-- 배율: 현실 1초 = 인게임 TIME_SCALE초 인게임 하루(86400초) = 현실 86400/배율 초
+			local scale = _GameTimeManager.TIME_SCALE
+			local elapsedReal = _UtilLogic.ElapsedSeconds - self._T.anchorElapsed
+			local gameSecOfDay = (self._T.anchorSecOfDay + elapsedReal * scale) % 86400
+			local remainReal = (86400 - gameSecOfDay) / scale
+			str = self:FormatCountdown(remainReal)
+		end
+
+		if str == self._T.lastTimeStr then
+			return
+		end
+		self._T.lastTimeStr = str
+		self.TimeText.Text = str
+	end
+
+	@ExecSpace("ClientOnly")
+	method string FormatCountdown(number totalSeconds)
+		-- 남은 현실초를 1시간 이상이면 HH:MM:SS, 아니면 MM:SS 문자열로 만든다.
+		local s = math.floor(totalSeconds + 0.5)
+		if s < 0 then
+			s = 0
+		end
+		local h = math.floor(s / 3600)
+		local m = math.floor((s % 3600) / 60)
+		local sec = s % 60
+		if h > 0 then
+			return string.format("%02d:%02d:%02d", h, m, sec)
+		end
+		return string.format("%02d:%02d", m, sec)
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleEnterGameClientEvt(EnterGameClientEvt event)
+		self:ClientInit()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleShopSellResultEvt(ShopSellResultEvt event)
+		-- 판매 결과
+		-- 상점은 실패만 로그로 남긴다.
+
+		if not event.Success then
+			_LogManager:Log(string.format("[UIShopComp] 판매 실패: %s", event.Reason))
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleShopRefreshResultEvt(ShopRefreshResultEvt event)
+		-- 새로고침 결과. 성공하면 새 진열이 ShopLineupEvt로 따로 오니까 여기선 실패만 알린다
+		if not event.Success then
+			_LogManager:Log(string.format("[UIShopComp] 새로고침 실패: %s", event.Reason))
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleShopLineupEvt(ShopLineupEvt event)
+		-- 서버가 뽑은 진열이 도착했다. 지금 열려있는 상점 거면 다시 그린다
+		if self.ShopId ~= 0 and self.ShopId == event.ShopId then
+			self:RenderGoods()
+		end
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleShopBuyResultEvt(ShopBuyResultEvt event)
+		-- 구매 결과. 성공했으면 재고와 메소가 줄었으니 그 줄과 구매 버튼을 다시 맞춘다.
+		-- 실패는 재고를 건드리지 않는다.
+		if event.Success then
+			self:ApplyRemaining(event.ItemCode, event.Remaining)
+		else
+			_LogManager:Log(string.format("[UIShopComp] 구매 실패: %s", event.Reason))
+		end
+
+		self:RefreshBuyButton()
+	end
+
+	@ExecSpace("ClientOnly")
+	@EventSender("LocalPlayer")
+	handler HandleShopDailyResetEvt(ShopDailyResetEvt event)
+		-- 하루가 지나서 서버가 재고랑 진열을 리셋했다 (클라 사본도 PlayerShopComp가 이미 비웠다)
+		-- 열려있는 상점이면 새 진열을 다시 받아온다. 도착하면 ShopLineupEvt가 다시 그린다
+		if self.ShopId == 0 then
+			return
+		end
+
+		local shopComp = _UserService.LocalPlayer.PlayerShopComp
+		if isvalid(shopComp) then
+			shopComp:RequestShopLineup(self.ShopId)
+		end
+		self:RenderGoods()
+	end
+
+end

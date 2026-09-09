@@ -1,0 +1,417 @@
+-- 이 파일은 팀 프로젝트(Tree of Sharenian) 코드입니다.
+
+@Logic
+script MapManager extends Logic
+
+	@ExecSpace("ServerOnly")
+	method void Spawn_OreVeinModel(string mapCode)
+		--[[
+		*@ brief : 몬스터 방(RoomMarkerComp)마다 광맥(Model_OreVein)을 스폰한다.
+		  - 방 구분 : 마커 위치에서 붙어있는 monsterRoom 타일을 한 덩어리로 묶기(flood-fill)
+		  - 개수    : Ore_RoomSpawn(MapCode, RoomId) 의 Min~Max 랜덤
+		  - 종류    : Ore_SpawnRule(MapCode, 가중치)  / 스탯 : Ore_VeinData(MinableData)
+		* 맵 이름이 곧 맵코드다. Ore_SpawnRule에 이 맵 행이 없으면(=광맥 없는 맵) 스폰하지 않는다.
+		* OnMapEnter는 입장마다 호출되므로, 마커에 이미 광맥 자식이 있으면 그 방은 건너뛴다(방별 중복 방지).
+		]]
+
+		local mapEntity = _EntityService:GetEntityByPath("/maps/" .. mapCode)
+		if not isvalid(mapEntity) then
+			return
+		end
+
+		-- 이 맵의 광맥 종류 후보(Ore_SpawnRule). 후보가 없으면 광맥 없는 맵이므로 스폰 생략.
+		local candidateInfo = _MinableData:GetVeinCandidates(mapCode)
+		if candidateInfo == nil or #candidateInfo.Candidates == 0 or candidateInfo.TotalWeight <= 0 then
+			--_LogManager:Log("[MapManager] Spawn_OreVeinModel() : 광맥 후보 없음, 스폰 생략. [" .. mapCode .. "]")
+			return
+		end
+
+		-- RectTileMap 컴포넌트 (방 타일 조회용)
+		local rectTileEntity = _EntityService:GetEntityByPath("/maps/" .. mapCode .. "/RectTileMap")
+		if not isvalid(rectTileEntity) then
+			_LogManager:LogWarning("[MapManager] Spawn_OreVeinModel() : RectTileMap 엔티티 없음. [" .. mapCode .. "]")
+			return
+		end
+		---@type RectTileMapComponent
+		local rectTileComp = rectTileEntity:GetComponent("RectTileMapComponent")
+		if not isvalid(rectTileComp) then
+			_LogManager:LogWarning("[MapManager] Spawn_OreVeinModel() : RectTileMapComponent 없음.")
+			return
+		end
+
+		-- 방 마커 수집 (맵 아래에서 타입으로 전부 찾음)
+		local markers = mapEntity:GetChildComponentsByTypeName("script.RoomMarkerComp", true)
+		if markers == nil or #markers == 0 then
+			_LogManager:Log("[MapManager] Spawn_OreVeinModel() : 방 마커(RoomMarkerComp) 없음. [" .. mapCode .. "]")
+			return
+		end
+
+		-- OreVein 모델 Entry ID
+		local modelId = "b694a390-9a4e-4943-adbe-4cb6c7db2930"
+
+		-- 방마다 스폰 (맵 이름이 곧 맵코드)
+		for _, comp in ipairs(markers) do
+			---@type RoomMarkerComp
+			local marker = comp
+			self:SpawnOreForRoom(rectTileComp, marker, mapCode, modelId, candidateInfo)
+		end
+	end
+
+	-- (팀원이 작성한 RespawnOreForRoom - 몬스터 리젠 사이클에 맞춘 방 단위 재스폰 - 생략)
+
+	@ExecSpace("ServerOnly")
+	method void SpawnOreForRoom(RectTileMapComponent rectTileComp, RoomMarkerComp marker, string mapCode, string modelId, table candidateInfo)
+		-- 방 마커 하나 처리: 방 타일 묶기 -> 개수만큼 광맥 스폰(마커 하위에) -> 종류/스탯 세팅
+		local markerEntity = marker.Entity
+		if not isvalid(markerEntity) then
+			return
+		end
+
+		-- 방별 중복 방지: 이미 이 마커에 광맥이 붙어있으면 그 방은 건너뜀
+		if #markerEntity.Children:ToTable() > 0 then
+			return
+		end
+
+		local roomId = marker.RoomId
+		local spawnCount = self:GetRoomSpawnCount(mapCode, roomId)
+		if spawnCount <= 0 then
+			-- 데이터 없음(-1) 또는 개수 0 -> 스폰 안 함
+			return
+		end
+
+		-- 마커 위치 -> 타일좌표 -> 붙어있는 monsterRoom 타일 한 덩어리로 묶기
+		local startCell = rectTileComp:ToCellPosition(markerEntity.TransformComponent.WorldPosition)
+		local roomTiles = self:CollectRoomTiles(rectTileComp, startCell)
+		if #roomTiles == 0 then
+			_LogManager:LogWarning("[MapManager] SpawnOreForRoom() : 방 타일 없음(마커가 monsterRoom 타일 위에 있는지 확인). roomId=" .. roomId)
+			return
+		end
+
+		-- 방 타일 중 spawnCount개에 스폰 (타일 수보다 많으면 타일 수로 보정)
+		self:ShuffleInPlace(roomTiles)
+		local spawnLimit = spawnCount
+		if spawnLimit > #roomTiles then
+			spawnLimit = #roomTiles
+		end
+
+		for i = 1, spawnLimit do
+			local x = roomTiles[i].x
+			local y = roomTiles[i].y
+			local name = "Spawned_OreVein_" .. tostring(x) .. "," .. tostring(y)
+			-- 흙벽 스폰과 동일한 좌표 규칙: 칸번호 + 0.5
+			local position = Vector3(x + 0.5, y + 0.5, 1.0)
+
+			local oreVein = self:AcquireOreVein(modelId, name, position, markerEntity)
+			if isvalid(oreVein) then
+				-- 부모(마커)가 원점이 아니면 스폰 위치가 부모 기준으로 틀어지므로 월드 좌표를 직접 지정(광맥은 Body 없음)
+				local tr = oreVein.TransformComponent
+				if isvalid(tr) then
+					tr.WorldPosition = position
+				end
+				local picked = self:PickWeighted(candidateInfo.Candidates, candidateInfo.TotalWeight)
+				local veinId = picked.veinId
+				local veinData = _MinableData:GetVeinData(veinId)
+				---@type OreVeinHitComp
+				local hitComp = oreVein:GetComponent("script.OreVeinHitComp")
+				if isvalid(hitComp) then
+					hitComp:SetupVein(veinId, veinData)
+				else
+					_LogManager:LogWarning("[MapManager] SpawnOreForRoom() : OreVeinHitComp 없음. roomId=" .. roomId .. " " .. x .. "," .. y)
+				end
+			end
+		end
+
+		_LogManager:Log("[MapManager] SpawnOreForRoom() : roomId=" .. roomId .. " 광맥 " .. spawnLimit .. "개 스폰 (요청 " .. spawnCount .. ")")
+	end
+
+	method table CollectRoomTiles(RectTileMapComponent rectTileComp, any startCell)
+		-- startCell에서 시작해 상하좌우로 붙어있는 monsterRoom 타일을 한 덩어리로 묶어 { {x,y}, ... } 로 반환.
+		-- 방은 벽(monsterRoom이 아닌 타일)으로 둘러싸여 있어, 벽을 만나면 번지기가 멈춰 옆 방과 안 섞인다.
+		local result = {}
+		if not isvalid(rectTileComp) then
+			return result
+		end
+
+		local startInfo = rectTileComp:GetTile(startCell.x, startCell.y)
+		if startInfo == nil or startInfo.Name ~= "monsterRoom" then
+			return result
+		end
+
+		local visited = {}
+		local stack = {}
+		visited[startCell.x .. "," .. startCell.y] = true
+		table.insert(stack, { x = startCell.x, y = startCell.y })
+
+		while #stack > 0 do
+			local cur = table.remove(stack)
+			table.insert(result, { x = cur.x, y = cur.y })
+
+			-- 상하좌우 이웃
+			local neighbors = {
+				{ cur.x + 1, cur.y },
+				{ cur.x - 1, cur.y },
+				{ cur.x, cur.y + 1 },
+				{ cur.x, cur.y - 1 },
+			}
+			for _, n in ipairs(neighbors) do
+				local nx = n[1]
+				local ny = n[2]
+				local key = nx .. "," .. ny
+				if visited[key] ~= true then
+					local info = rectTileComp:GetTile(nx, ny)
+					if info ~= nil and info.Name == "monsterRoom" then
+						visited[key] = true
+						table.insert(stack, { x = nx, y = ny })
+					end
+				end
+			end
+		end
+
+		return result
+	end
+
+	method integer GetRoomSpawnCount(string mapCode, string roomId)
+		-- MinableData에서 이 방의 개수 범위(Min~Max)를 받아 그 안에서 랜덤 개수를 굴린다.
+		-- 범위가 없으면 -1(그 방은 스폰 안 함). 데이터 읽기는 MinableData, 랜덤은 여기서.
+		local range = _MinableData:GetRoomSpawnRange(mapCode, roomId)
+		if range == nil then
+			return -1
+		end
+		local minCount = range.Min
+		local maxCount = range.Max
+		if maxCount < minCount then
+			maxCount = minCount
+		end
+		if maxCount <= 0 then
+			return 0
+		end
+		return _UtilLogic:RandomIntegerRange(minCount, maxCount)
+	end
+
+	@ExecSpace("ServerOnly")
+	method Entity AcquireOreVein(string modelId, string spawnName, Vector3 position, Entity parent)
+		-- 광맥 생성 창구. 지금은 직접 스폰. 나중에 오브젝트 풀로 바꿀 때 이 함수 안만 교체하면 된다.
+		return _SpawnService:SpawnByModelId(modelId, spawnName, position, parent)
+	end
+
+	@ExecSpace("ServerOnly")
+	method void Spawn_DirtWallModel(string mapCode, table destroyedList)
+		-- 전달받은 파괴목록(destroyedList)을 반영해 해당 맵에 흙벽을 스폰한다.
+		-- destroyedList = { {X=,Y=}, ... } (해당 맵의 파괴 위치). 데이터 소유/조회는 PlayerMapComp 담당.
+
+		-- 이 맵의 흙벽 스탯. 데이터가 없으면 이 맵엔 흙벽을 만들지 않는다. (맵 이름이 곧 맵코드)
+		local wallData = _MinableData:GetWallData(mapCode)
+		if wallData == nil then
+			--_LogManager:Log("[MapManager] Spawn_DirtWallModel() : 흙벽 데이터 없음, 스폰 생략. [" .. mapCode .. "]")
+			return
+		end
+
+		local path = "/maps/" .. mapCode .. "/RectTileMap"  -- .. rectTileMap 타일을 레이어1 고정필요
+		---@type RectTileMapComponent
+		local rectTileComp = _EntityService:GetEntityByPath(path):GetComponent("RectTileMapComponent")
+
+		if not isvalid(rectTileComp) then
+		    _LogManager:LogWarning("[MapManager] Spawn_DirtWallModel() : RectTileMapComponent 없음.")
+		    return
+		end
+
+		-- 파괴된 위치는 empty타일로 교체 (해당 위치엔 흙벽 엔티티가 스폰되지 않음)
+		if destroyedList ~= nil then
+		    for _, pos in ipairs(destroyedList) do
+		        rectTileComp:SetTile("empty", pos.X, pos.Y)
+		    end
+		end
+
+		-- dirtWall 타일마다 흙벽(Model_DirtWall) 엔티티 스폰 (부모: /maps/<mapCode>/DirtWalls)
+		local dirtWallId = "58cfce67-01b7-4c63-8158-cd0432a7c950"
+		local dirtWallParentPath = "/maps/" .. mapCode .. "/DirtWalls"
+		self:SpawnModelOnTiles(rectTileComp, "dirtWall", dirtWallId, "Spawned_DirtWall", dirtWallParentPath, 0.5, 0,
+			function(spawnedEntity, x, y)
+				---@type DirtWallHitComp
+				local hitComp = spawnedEntity:GetComponent("script.DirtWallHitComp")
+				if isvalid(hitComp) then
+					hitComp:SetupWall(mapCode, wallData)
+				else
+					_LogManager:LogWarning("[MapManager] Spawn_DirtWallModel() : DirtWallHitComp 없음. [" .. mapCode .. "] " .. x .. "," .. y)
+				end
+			end)
+	end
+
+	@ExecSpace("Client")
+	method void RequestSetEmptyTiles_ToClient(string mapCode, table destroyedList)
+		--[[
+		*@ brief : 파괴된 흙벽 위치의 타일을 통행가능한 empty타일로 교체
+		* SetTile은 Sync 미지원으로 서버에서의 변경이 클라이언트에 자동 반영되지 않아
+		  서버에서 Client 함수를 호출해 클라이언트에서 SetTile을 실행하는 방식으로 동기화 처리
+		]]
+
+
+		if destroyedList == nil then
+			-- _LogManager:Log("[Client] destroyedList nil") -- 확인용 로그 출력
+			return
+		end
+
+		local path = "/maps/" .. mapCode .. "/RectTileMap"
+		---@type RectTileMapComponent
+		local rectTileComp = _EntityService:GetEntityByPath(path):GetComponent("RectTileMapComponent")
+		if not isvalid(rectTileComp) then
+			return
+		end
+
+		for _, pos in ipairs(destroyedList) do
+			rectTileComp:SetTile("empty", pos.X, pos.Y)
+		end
+	end
+
+	@ExecSpace("ServerOnly")
+	method table SpawnModelOnTiles(RectTileMapComponent rectTileComp, string tileName, string modelId, string entityName, string parentPath, number offset, number maxCount, any onSpawned)
+		--[[
+		*@ brief : 주어진 RectTileMap에서 tileName 이름을 가진 타일 위치에 모델을 스폰한다.
+		* 호출 측이 이미 가진 rectTileComp를 그대로 받아 타일 찾기/스폰을 처리한다(중복 조회 방지).
+		*@ param rectTileComp : 스캔할 RectTileMapComponent (호출 측이 보유)
+		*@ param tileName     : 스폰 대상 타일 이름 (이 이름의 타일 위치마다 스폰)
+		*@ param modelId      : 스폰할 모델 Entry ID
+		*@ param entityName   : 스폰 엔티티 이름. 실제 이름은 "entityName_x,y"로 부여해 중복 방지
+		*@ param parentPath   : 부모 엔티티 경로. 빈 문자열/nil이면 맵 엔티티(rectTileComp.Entity.CurrentMap)를 부모로 사용
+		*@ param offset       : 타일 중심 X/Y 오프셋 (예: 0 또는 0.5). 미입력 시 0
+		*@ param maxCount     : 최대 스폰 개수. 0/nil이면 해당 타일 전부에 스폰, 양수이면 셔플 후 그 개수만 스폰(타일 수로 상한 보정)
+		*@ param onSpawned    : (선택) 스폰 직후 호출되는 콜백 onSpawned(spawnedEntity, x, y). nil이면 호출하지 않음.
+		*@ return : 스폰된 엔티티 목록 { { Entity = entity, X = x, Y = y }, ... }
+		]]
+
+		offset = offset or 0
+		maxCount = maxCount or 0
+
+		local spawnedList = {}
+
+		if not isvalid(rectTileComp) then
+			_LogManager:LogWarning("[MapManager] SpawnModelOnTiles() : rectTileComp 유효하지 않음.")
+			return spawnedList
+		end
+
+		-- 부모 결정 : parentPath가 비었거나 잘못된 경로면 맵 엔티티로 대체 (SpawnByModelId는 nil parent 비권장)
+		local parent = rectTileComp.Entity.CurrentMap
+		if parentPath ~= nil and parentPath ~= "" then
+			local parentEntity = _EntityService:GetEntityByPath(parentPath)
+			if isvalid(parentEntity) then
+				parent = parentEntity
+			else
+				--_LogManager:LogWarning("[MapManager] SpawnModelOnTiles() : parentPath 엔티티 없음, 맵 엔티티로 대체. parentPath=" .. parentPath)
+			end
+		end
+
+		if not isvalid(parent) then
+			_LogManager:LogWarning("[MapManager] SpawnModelOnTiles() : 부모 엔티티 없음(맵 엔티티 확인 불가).")
+			return spawnedList
+		end
+
+		-- tileName 타일 위치 찾기
+		local positions = self:CollectTilePositionsByName(rectTileComp, tileName)
+		if #positions == 0 then
+			-- _LogManager:Log("[MapManager] SpawnModelOnTiles() : '" .. tileName .. "' 타일 없음.") -- 확인용 로그
+			return spawnedList
+		end
+
+		-- maxCount가 양수이고 타일 수보다 적으면 셔플 후 일부만 스폰 (랜덤 부분 스폰)
+		local spawnLimit = #positions
+		if maxCount > 0 and maxCount < spawnLimit then
+			self:ShuffleInPlace(positions)
+			spawnLimit = maxCount
+		end
+
+		-- 각 타일 위치에 스폰
+		for i = 1, spawnLimit do
+			local x = positions[i].x
+			local y = positions[i].y
+
+			local name = entityName .. "_" .. tostring(x) .. "," .. tostring(y)
+			local spawnPosition = Vector3((x + offset), (y + offset), 1.0)
+
+			local spawnedEntity = _SpawnService:SpawnByModelId(modelId, name, spawnPosition, parent)
+			if isvalid(spawnedEntity) == false then
+				_LogManager:Log("[MapManager] SpawnModelOnTiles() : " .. x .. "," .. y .. " '" .. tileName .. "' 스폰 실패")
+			else
+				table.insert(spawnedList, { Entity = spawnedEntity, X = x, Y = y })
+				if onSpawned ~= nil then
+					onSpawned(spawnedEntity, x, y)
+				end
+			end
+		end
+
+		return spawnedList
+	end
+
+	method table CollectTilePositionsByName(RectTileMapComponent rectTileComp, string tileName)
+		-- RectTileMap에서 지정한 이름의 타일 위치들을 { { x, y }, ... } 형태로 모은다.
+		local result = {}
+
+		local positions = rectTileComp:GetAllTilePositions()
+		for i = 1, #positions do
+			local x = positions[i].x
+			local y = positions[i].y
+
+			local tileInfo = rectTileComp:GetTile(x, y)
+			if tileInfo ~= nil and tileInfo.Name == tileName then
+				table.insert(result, { x = x, y = y })
+			end
+		end
+
+		return result
+	end
+
+	method void ShuffleInPlace(table arr)
+		-- Fisher-Yates 셔플로 배열을 제자리에서 무작위 정렬한다.
+		for i = #arr, 2, -1 do
+			local j = _UtilLogic:RandomIntegerRange(1, i)
+			arr[i], arr[j] = arr[j], arr[i]
+		end
+	end
+
+	method table PickWeighted(table candidates, number totalWeight)
+		-- 가중치 목록에서 하나를 뽑아 그 항목(테이블)을 통째로 돌려준다. 각 항목은 Weight 필드를 가진다.
+		-- 가중치 합이 0 이하(가중치가 다 비어있음)면 균등 랜덤으로 뽑는다. 광맥 종류,드랍 아이템 공용.
+		if candidates == nil or #candidates == 0 then
+			return nil
+		end
+		if totalWeight <= 0 then
+			return candidates[_UtilLogic:RandomIntegerRange(1, #candidates)]
+		end
+		local roll = _UtilLogic:RandomIntegerRange(1, totalWeight)
+		local acc = 0
+		for _, c in ipairs(candidates) do
+			acc = acc + c.Weight
+			if roll <= acc then
+				return c
+			end
+		end
+		return candidates[#candidates]
+	end
+
+	method string GetRegion(string mapCode)
+		-- 맵코드의 구역 코드 반환. 1_1 -> 1, 1_BOSS1->1, 0->0
+		local splitIndex = string.find(mapCode, "_")
+		if splitIndex == nil then
+			return mapCode
+		end
+		return string.sub(mapCode, 1, splitIndex - 1)
+	end
+
+	method Vector2 GetTileSize(RectTileMapComponent tilemap)
+		-- 타일 한 칸의 월드 크기(가로, 세로)를 잰다. (0,0)칸과 (1,0)/(0,1)칸의 월드 좌표 차이
+
+		if not isvalid(tilemap) then
+			return Vector2(0, 0)
+		end
+		local originWorld = tilemap:ToWorldPosition(Vector2Int(0, 0))
+		local tileWidth = math.abs(tilemap:ToWorldPosition(Vector2Int(1, 0)).x - originWorld.x)
+		local tileHeight = math.abs(tilemap:ToWorldPosition(Vector2Int(0, 1)).y - originWorld.y)
+		if tileWidth <= 0 then
+			tileWidth = 1
+		end
+		if tileHeight <= 0 then
+			tileHeight = 1
+		end
+		return Vector2(tileWidth, tileHeight)
+	end
+
+end
